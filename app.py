@@ -23,6 +23,7 @@ def fetch_news_data(keyword):
     news_items = []
     for item in items:
         title = item.title.text
+        link = item.link.text  # Extract article link
         description = BeautifulSoup(item.description.text, "html.parser").get_text()
         clean_desc = re.sub(r'\s+', ' ', description).strip()
         if len(clean_desc) > 250:
@@ -39,7 +40,8 @@ def fetch_news_data(keyword):
         news_items.append({
             'title': title,
             'description': clean_desc,
-            'sentiment': sentiment_category
+            'sentiment': sentiment_category,
+            'link': link  # Include the link
         })
     return news_items
 
@@ -85,8 +87,7 @@ if keyword:
             for sentiment in ["Positive", "Neutral", "Negative"]:
                 st.markdown(f"### 🔸 {sentiment} News")
                 for news in [n for n in news_items if n['sentiment'] == sentiment][:2]:
-                    st.write(f"**{news['title']}**")
+                    st.markdown(f"**[{news['title']}]({news['link']})**")
                     st.caption(news['description'])
         else:
             st.warning("No news articles found.")
-
