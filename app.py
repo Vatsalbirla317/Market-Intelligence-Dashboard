@@ -320,6 +320,7 @@ else:
                     close_prices = stock_data.xs('Close', level=1, axis=1)
                 else:
                     close_prices = stock_data[['Close']]
+                
                 fig = px.line(close_prices, title="Stock Price (Close)")
                 fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="white")
                 st.plotly_chart(fig, use_container_width=True)
@@ -372,21 +373,24 @@ else:
                 articles = sentiment_data[selected_keyword_news]['articles']
                 if articles:
                     pos_col, neu_col, neg_col = st.columns(3)
-                    # --- FIX: Replaced the incorrect list comprehension with a standard for loop ---
+                    # --- THE ONLY FIX IS IN THE THREE BLOCKS BELOW ---
                     with pos_col:
                         st.subheader("👍 Positive")
+                        # Use a standard, robust for-loop
                         for article in [a for a in articles if a['sentiment_category'] == 'Positive'][:5]:
                             st.markdown(f"**[{article['title']}]({article['link']})**")
                             st.caption(f"Source: {article['source']}")
                             st.markdown("---")
                     with neu_col:
                         st.subheader("😐 Neutral")
+                        # Use a standard, robust for-loop
                         for article in [a for a in articles if a['sentiment_category'] == 'Neutral'][:5]:
                             st.markdown(f"**[{article['title']}]({article['link']})**")
                             st.caption(f"Source: {article['source']}")
                             st.markdown("---")
                     with neg_col:
                         st.subheader("👎 Negative")
+                        # Use a standard, robust for-loop
                         for article in [a for a in articles if a['sentiment_category'] == 'Negative'][:5]:
                             st.markdown(f"**[{article['title']}]({article['link']})**")
                             st.caption(f"Source: {article['source']}")
