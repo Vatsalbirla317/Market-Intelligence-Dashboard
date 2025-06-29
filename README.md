@@ -1,4 +1,4 @@
-# 📊 Brand Reputation Analyzer
+# 📊Market Intelligence Dashboard
 
 Brand Reputation Analyzer is a Python-based tool that uses Google Trends and News Sentiment Analysis to evaluate the public perception of a given topic (e.g., a brand, product, or person).
 
