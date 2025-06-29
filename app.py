@@ -5,137 +5,89 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 import re
+from collections import Counter
+from io import BytesIO
+import plotly.express as px
+import yfinance as yf
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
+import spacy
+from fpdf import FPDF
+import numpy as np
 
 # ----------------- Page Configuration -----------------
-st.set_page_config(
-    page_title="Brand Reputation Analyzer",
-    page_icon="🧠",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
+st.set_page_config(page_title="Market Intelligence Dashboard", page_icon="🧠", layout="wide")
 
-# ----------------- Custom CSS for the "Crazy" Look -----------------
+# ----------------- Load Models & Analyzer (with Caching) -----------------
+@st.cache_resource
+def load_spacy_model():
+    return spacy.load("en_core_web_sm")
+
+@st.cache_resource
+def load_sentiment_analyzer():
+    return SentimentIntensityAnalyzer()
+
+nlp = load_spacy_model()
+analyzer = load_sentiment_analyzer()
+
+# ----------------- Custom CSS -----------------
 def load_css():
     st.markdown("""
         <style>
-            /* Main app background */
-            .stApp {
-                background-color: #0E1117;
-                color: #FAFAFA;
-            }
-
-            /* --- Main Title --- */
-            .title-text {
-                font-size: 3.5rem !important;
-                font-weight: 700;
-                color: #FFFFFF;
-                text-align: center;
-                padding: 20px;
-                background: -webkit-linear-gradient(45deg, #FF4B4B, #4B79FF, #3CFFD1);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-                font-family: 'monospace', sans-serif;
-            }
-
-            /* --- Input Box --- */
-            [data-testid="stTextInput"] > div > div > input {
-                border-radius: 20px;
-                border: 2px solid #4B79FF;
-                color: #FAFAFA;
-                background-color: #1A1C2A;
-                padding: 10px 15px;
-            }
-
-            /* --- Custom Containers (Cards) --- */
-            .st-emotion-cache-1r4qj8v { /* This targets the container with border */
-                background-color: rgba(40, 43, 54, 0.7);
-                border: 1px solid #4B79FF;
-                border-radius: 10px;
-                padding: 20px !important;
-                box-shadow: 0 4px 12px 0 rgba(0, 0, 0, 0.2);
-                transition: transform 0.2s ease-in-out;
-            }
-            .st-emotion-cache-1r4qj8v:hover {
-                transform: scale(1.02);
-                border-color: #3CFFD1;
-            }
-
-            /* --- Metric Cards --- */
-            [data-testid="stMetric"] {
-                background-color: #1A1C2A;
-                border: 1px solid #262730;
-                border-radius: 8px;
-                padding: 15px;
-                text-align: center;
-            }
-            [data-testid="stMetricLabel"] {
-                font-size: 1.1rem;
-                font-weight: 600;
-                color: #A0A0A0;
-            }
-            [data-testid="stMetricValue"] {
-                font-size: 2.5rem !important;
-                font-weight: 800;
-            }
-            
-            /* --- Section Headers --- */
-            .section-header {
-                font-size: 1.8rem;
-                font-weight: 700;
-                color: #FFFFFF;
-                border-bottom: 2px solid #4B79FF;
-                padding-bottom: 10px;
-                margin-top: 40px;
-                margin-bottom: 20px;
-            }
-            
-            /* --- News Article Links --- */
-            .news-title a {
-                color: #3CFFD1 !important;
-                text-decoration: none;
-                font-size: 1.2rem;
-                font-weight: 600;
-            }
-            .news-title a:hover {
-                text-decoration: underline;
-                color: #FFFFFF !important;
-            }
-            
-            /* --- Footer --- */
-            .footer {
-                text-align: center;
-                padding: 20px;
-                color: #A0A0A0;
-                font-family: 'monospace';
-            }
+            .stApp { background-color: #0E1117; color: #FAFAFA; }
+            .title-text { font-size: 3.5rem; font-weight: 700; color: #FFFFFF; text-align: center; padding-bottom: 20px; background: -webkit-linear-gradient(45deg, #FF4B4B, #4B79FF, #3CFFD1); -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-family: 'monospace', sans-serif; }
+            .section-header { font-size: 1.8rem; font-weight: 700; color: #FFFFFF; border-bottom: 2px solid #4B79FF; padding-bottom: 10px; margin-top: 40px; margin-bottom: 20px; }
+            [data-testid="stMetric"] { background-color: #1A1C2A; border: 1px solid #262730; border-radius: 8px; padding: 15px; text-align: center; }
+            .stTabs [data-baseweb="tab-list"] { gap: 24px; }
+            .stTabs [data-baseweb="tab"] { height: 50px; background-color: #1A1C2A; border-radius: 8px; gap: 8px; padding: 10px 20px; }
+            .stTabs [data-baseweb="tab"]:hover { background-color: #262730; }
+            .stTabs [aria-selected="true"] { background-color: #4B79FF; }
         </style>
     """, unsafe_allow_html=True)
 
-# ----------------- Backend Functions (Your Original Code) -----------------
-
-analyzer = SentimentIntensityAnalyzer()
-
-@st.cache_data(ttl=600) # Cache data for 10 minutes
-def fetch_google_trends(keyword):
+# ----------------- Backend Data Fetching Functions (Cached) -----------------
+@st.cache_data(ttl=3600)
+def fetch_trending_searches(country_code='US'):
     pytrends = TrendReq(hl='en-US', tz=330)
     try:
-        pytrends.build_payload([keyword], cat=0, timeframe='now 1-d', geo='', gprop='')
+        df = pytrends.trending_searches(pn=country_code.lower())
+        return df[0].tolist()
+    except Exception:
+        return []
+
+@st.cache_data(ttl=3600)
+def get_google_suggestions(term):
+    if not term:
+        return []
+    pytrends = TrendReq(hl='en-US', tz=330)
+    try:
+        return pytrends.suggestions(keyword=term)
+    except Exception:
+        return []
+
+@st.cache_data(ttl=600)
+def fetch_google_trends(keywords, timeframe='today 1-m', geo=''):
+    if not keywords:
+        return None
+    pytrends = TrendReq(hl='en-US', tz=330)
+    try:
+        pytrends.build_payload(keywords, cat=0, timeframe=timeframe, geo=geo, gprop='')
         data = pytrends.interest_over_time()
-        return data[[keyword]] if not data.empty else None
-    except Exception as e:
-        st.error(f"Could not fetch Google Trends data. Error: {e}")
+        if 'isPartial' in data.columns:
+            data = data.drop(columns=['isPartial'])
+        return data
+    except Exception:
         return None
 
-@st.cache_data(ttl=600) # Cache data for 10 minutes
-def fetch_news_data(keyword):
+@st.cache_data(ttl=600)
+def fetch_news_data(keyword, geo='US'):
     news_items = []
     try:
-        url = f"https://news.google.com/rss/search?q={keyword}&hl=en-US&gl=US&ceid=US:en"
+        url = f"https://news.google.com/rss/search?q={keyword}&hl=en-{geo}&gl={geo}&ceid={geo}:en"
         res = requests.get(url)
-        res.raise_for_status() # Will raise an HTTPError for bad responses
+        res.raise_for_status()
         soup = BeautifulSoup(res.content, features="xml")
         items = soup.find_all('item')
-
         for item in items:
             title = item.title.text
             link = item.link.text
@@ -143,116 +95,317 @@ def fetch_news_data(keyword):
             clean_desc = re.sub(r'\s+', ' ', description).strip()
             if len(clean_desc) > 250:
                 clean_desc = clean_desc[:247] + "..."
-
             combined_text = f"{title} {clean_desc}"
             sentiment_score = analyzer.polarity_scores(combined_text)["compound"]
-            sentiment_category = (
-                "Positive" if sentiment_score > 0.1
-                else "Negative" if sentiment_score < -0.1
-                else "Neutral"
-            )
-
-            news_items.append({
-                'title': title,
-                'description': clean_desc,
-                'sentiment': sentiment_category,
-                'link': link
-            })
-    except requests.exceptions.RequestException as e:
-        st.error(f"Could not fetch news data. Error: {e}")
-    except Exception as e:
-        st.error(f"An error occurred while parsing news. Error: {e}")
-        
+            sentiment_category = ("Positive" if sentiment_score > 0.1 else "Negative" if sentiment_score < -0.1 else "Neutral")
+            news_items.append({'title': title, 'link': link, 'description': clean_desc, 'sentiment_category': sentiment_category, 'sentiment_score': sentiment_score, 'source': item.source.text if item.source else 'N/A'})
+    except Exception:
+        return []
     return news_items
 
-def sentiment_summary(news_items):
-    counts = {"Positive": 0, "Neutral": 0, "Negative": 0}
-    for item in news_items:
-        counts[item['sentiment']] += 1
+@st.cache_data(ttl=600)
+def fetch_stock_data(tickers, period='1y'):
+    try:
+        tickers_str = " ".join(tickers)
+        if not tickers_str:
+            return None
+        data = yf.download(tickers_str, period=period, group_by='ticker', auto_adjust=True)
+        return data if not data.empty else None
+    except Exception:
+        return None
+
+# ----------------- Analysis & Visualization Functions -----------------
+def get_sentiment_summary(news_items):
+    counts = Counter(item['sentiment_category'] for item in news_items)
     total = sum(counts.values())
-    if total == 0:
-        return {k: 0 for k in counts}
-    return {k: round((v / total) * 100, 2) for k, v in counts.items()}
+    return {k: round((counts.get(k, 0) / total) * 100, 1) if total > 0 else 0 for k in ["Positive", "Neutral", "Negative"]}
 
-# ----------------- Streamlit UI -----------------
+def generate_wordcloud(text, title):
+    if not text:
+        return None
+    wc = WordCloud(width=800, height=400, background_color="rgba(255, 255, 255, 0)", mode="RGBA", collocations=False).generate(text)
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.imshow(wc, interpolation='bilinear')
+    ax.axis('off')
+    plt.title(title, color='white', fontsize=16)
+    fig.patch.set_alpha(0.0)
+    return fig
 
+COUNTRY_CODES_MAP = {'US': 'USA', 'GB': 'GBR', 'CA': 'CAN', 'AU': 'AUS', 'IN': 'IND'}
+
+@st.cache_data(ttl=1800)
+def get_geo_sentiment(keyword):
+    countries = {'US': 'United States', 'GB': 'United Kingdom', 'CA': 'Canada', 'AU': 'Australia', 'IN': 'India'}
+    geo_data = []
+    for code, name in countries.items():
+        news = fetch_news_data(keyword, geo=code)
+        if news:
+            summary_cats = get_sentiment_summary(news)
+            avg_score = np.mean([item['sentiment_score'] for item in news])
+            geo_data.append({'country': name, 'iso_alpha': COUNTRY_CODES_MAP.get(code), **summary_cats, 'avg_score': avg_score})
+    return pd.DataFrame(geo_data) if geo_data else None
+
+@st.cache_data(ttl=1800)
+def get_all_geo_data(keywords):
+    all_data_list = []
+    for keyword in keywords:
+        geo_df = get_geo_sentiment(keyword)
+        if geo_df is not None and not geo_df.empty:
+            geo_df['keyword'] = keyword
+            all_data_list.append(geo_df)
+    if not all_data_list:
+        return None
+    return pd.concat(all_data_list, ignore_index=True)
+
+def create_pdf_report(keywords, trends_fig, sentiment_data, wordclouds, stock_fig):
+    def sanitize_text(text):
+        return text.encode('latin-1', 'replace').decode('latin-1')
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", 'B', 16)
+    pdf.cell(0, 10, sanitize_text(f"Brand Reputation Report for: {', '.join(keywords)}"), 0, 1, 'C')
+    pdf.ln(10)
+    if trends_fig:
+        pdf.set_font("Arial", 'B', 12)
+        pdf.cell(0, 10, "Google Trends Analysis", 0, 1)
+        trends_img = BytesIO()
+        trends_fig.write_image(trends_img, format='png', scale=2)
+        pdf.image(trends_img, x=10, w=190)
+        pdf.ln(5)
+    for keyword, data in sentiment_data.items():
+        pdf.add_page()
+        pdf.set_font("Arial", 'B', 12)
+        pdf.cell(0, 10, sanitize_text(f"Sentiment for '{keyword}'"), 0, 1)
+        pdf.set_font("Arial", '', 10)
+        pdf.cell(0, 8, f"  - Positive: {data['summary']['Positive']}% | Neutral: {data['summary']['Neutral']}% | Negative: {data['summary']['Negative']}%", 0, 1)
+        has_pos_wc = 'positive' in wordclouds[keyword] and wordclouds[keyword]['positive'] is not None
+        has_neg_wc = 'negative' in wordclouds[keyword] and wordclouds[keyword]['negative'] is not None
+        if has_pos_wc:
+            wc_pos_img = BytesIO()
+            wordclouds[keyword]['positive'].savefig(wc_pos_img, format='png', dpi=150)
+            pdf.image(wc_pos_img, x=10 if has_neg_wc else pdf.w / 2 - 45, w=90)
+        if has_neg_wc:
+            wc_neg_img = BytesIO()
+            wordclouds[keyword]['negative'].savefig(wc_neg_img, format='png', dpi=150)
+            pdf.image(wc_neg_img, x=110, w=90)
+        if has_pos_wc or has_neg_wc:
+            pdf.ln(60)
+    if stock_fig:
+        pdf.add_page()
+        pdf.set_font("Arial", 'B', 12)
+        pdf.cell(0, 10, "Stock Market Performance", 0, 1)
+        stock_img = BytesIO()
+        stock_fig.write_image(stock_img, format='png', scale=2)
+        pdf.image(stock_img, x=10, w=190)
+    raw_output = pdf.output()
+    if isinstance(raw_output, str):
+        return raw_output.encode('latin-1')
+    return bytes(raw_output)
+
+# ----------------- STREAMLIT UI -----------------
 load_css()
+st.markdown('<h1 class="title-text">🧠 Market Intelligence Dashboard</h1>', unsafe_allow_html=True)
 
-st.markdown('<h1 class="title-text">🧠 Brand Reputation Analyzer</h1>', unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: #A0A0A0; font-size: 1.1rem;'>Enter any brand, product, or topic to instantly analyze its public perception and search interest.</p>", unsafe_allow_html=True)
+# --- Initialize Session State ---
+if 'keywords' not in st.session_state:
+    st.session_state.keywords = ["Tesla", "NVIDIA"]
+if 'tickers' not in st.session_state:
+    st.session_state.tickers = ["TSLA", "NVDA"]
+if 'suggestions' not in st.session_state:
+    st.session_state.suggestions = []
+if 'new_topic_input' not in st.session_state:
+    st.session_state.new_topic_input = ""
 
-keyword = st.text_input("", placeholder="Enter a topic to analyze (e.g., NVIDIA, OpenAI, Tesla)...", label_visibility="collapsed")
+# --- Sidebar ---
+with st.sidebar:
+    st.header("⚙️ Configuration")
 
-if keyword:
-    with st.spinner(f"Analyzing '{keyword}'... This may take a moment."):
+    st.write("#### Currently Analyzing Topics")
+    st.session_state.keywords = st.multiselect("Topics", list(set(st.session_state.keywords)), st.session_state.keywords, label_visibility="collapsed")
+    
+    st.write("#### Stock Tickers to Track")
+    ticker_input_str = st.text_input("Tickers", ", ".join(st.session_state.tickers), help="Comma-separated list of stock tickers (e.g., TSLA, PUM.DE, AAPL)", label_visibility="collapsed")
+    st.session_state.tickers = [t.strip().upper() for t in ticker_input_str.split(',') if t.strip()]
+
+    def add_suggestion_to_keywords(title):
+        if title not in st.session_state.keywords:
+            st.session_state.keywords.append(title)
+        st.session_state.suggestions = []
+        st.session_state.new_topic_input = ""
+
+    def search_for_suggestions():
+        if st.session_state.new_topic_input:
+            st.session_state.suggestions = get_google_suggestions(st.session_state.new_topic_input)
+    
+    st.write("#### Add a New Topic")
+    st.text_input("Type topic and press Enter", key="new_topic_input", on_change=search_for_suggestions, placeholder="e.g., Puma, Shah Rukh Khan...")
+
+    if st.session_state.suggestions:
+        st.write("Select the best match to add:")
+        for sugg in st.session_state.suggestions:
+            col1, col2 = st.columns([0.8, 0.2])
+            with col1:
+                st.write(f"**{sugg['title']}** ({sugg['type']})")
+            with col2:
+                st.button("➕", key=f"add_{sugg['mid']}", on_click=add_suggestion_to_keywords, args=(sugg['title'],))
+
+    TIMEFRAME_MAP = {'now 1-d': '1d', 'today 1-m': '1mo', 'today 3-m': '3mo', 'today 12-m': '1y'}
+    timeframe = st.selectbox("Trends Timeframe", list(TIMEFRAME_MAP.keys()), index=2)
+    geo = st.selectbox("Trends Region", ['US', 'GB', 'CA', 'AU', 'IN', ''], index=0, format_func=lambda x: "Worldwide" if x=='' else x)
+    
+    st.markdown("---")
+    
+    st.header("💡 Discover What's Trending")
+    with st.expander("Today's Top Google Searches"):
+        trends = fetch_trending_searches(geo if geo else 'US')
+        if trends:
+            for trend in trends[:10]:
+                if st.button(f"Analyze: {trend}", key=f"trend_btn_{trend}", use_container_width=True):
+                    if trend not in st.session_state.keywords:
+                        st.session_state.keywords.append(trend)
+                    st.rerun()
+        else:
+            st.write("Could not fetch trends.")
+
+keywords = st.session_state.keywords
+if not keywords:
+    st.warning("Please add a brand/topic in the sidebar to begin analysis.")
+else:
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Comparison Dashboard", "🌍 Geo-Sentiment Map", "📰 News Feed", "📄 Download Report"])
+    
+    stock_period = TIMEFRAME_MAP.get(timeframe)
+    trends_data = fetch_google_trends(keywords, timeframe, geo)
+    stock_data = fetch_stock_data(st.session_state.tickers, period=stock_period)
+    
+    sentiment_data = {}
+    wordcloud_figs = {}
+    for keyword in keywords:
+        news = fetch_news_data(keyword)
+        sentiment_data[keyword] = {'summary': get_sentiment_summary(news), 'articles': news}
+        wordcloud_figs[keyword] = {
+            'positive': generate_wordcloud(" ".join(n['description'] for n in news if n['sentiment_category'] == 'Positive'), "Positive Buzzwords"),
+            'negative': generate_wordcloud(" ".join(n['description'] for n in news if n['sentiment_category'] == 'Negative'), "Negative Buzzwords")
+        }
+    
+    with tab1:
+        st.markdown('<h2 class="section-header">🔍 Side-by-Side Analysis</h2>', unsafe_allow_html=True)
+        cols = st.columns(len(keywords) if keywords else 1)
+        for i, keyword in enumerate(keywords):
+            with cols[i]:
+                st.subheader(f"Analysis for '{keyword}'")
+                summary = sentiment_data[keyword]['summary']
+                st.metric("👍 Positive", f"{summary['Positive']}%")
+                st.metric("👎 Negative", f"{summary['Negative']}%")
+                st.metric("😐 Neutral", f"{summary['Neutral']}%")
+                st.markdown("---")
+                if wordcloud_figs[keyword]['positive']:
+                    st.pyplot(wordcloud_figs[keyword]['positive'], use_container_width=True)
+                if wordcloud_figs[keyword]['negative']:
+                    st.pyplot(wordcloud_figs[keyword]['negative'], use_container_width=True)
         
-        # Create main layout
-        main_col1, main_col2 = st.columns((5, 4), gap="large")
-
-        with main_col1:
-            st.markdown('<h2 class="section-header">📈 Google Trends (Last 24 Hours)</h2>', unsafe_allow_html=True)
-            trends_data = fetch_google_trends(keyword)
+        st.markdown('<h2 class="section-header">📈 Trend & Stock Comparison</h2>', unsafe_allow_html=True)
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("Google Search Trends")
             if trends_data is not None and not trends_data.empty:
-                st.line_chart(trends_data, use_container_width=True, color="#FF4B4B")
+                fig = px.line(trends_data, title="Interest Over Time")
+                fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="white")
+                st.plotly_chart(fig, use_container_width=True)
             else:
-                st.info("No Google Trends data available for this topic in the last 24 hours.")
+                st.warning("No trend data available.")
+        with col2:
+            st.subheader("Stock Market Performance")
+            if stock_data is not None and not stock_data.empty:
+                if isinstance(stock_data.columns, pd.MultiIndex):
+                    close_prices = stock_data.xs('Close', level=1, axis=1)
+                else:
+                    close_prices = stock_data[['Close']]
+                fig = px.line(close_prices, title="Stock Price (Close)")
+                fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="white")
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.warning("No stock data found for the provided tickers.")
 
-        news_items = fetch_news_data(keyword)
+    with tab2:
+        st.markdown('<h2 class="section-header">🌍 Global Sentiment Comparison</h2>', unsafe_allow_html=True)
+        map_type = st.radio("Select Map Type:", ("Dominant Sentiment (Single Brand)", "Sentiment Score (Single Brand)", "Competitive Comparison (Who Wins Where?)"), horizontal=True)
+        st.markdown("---")
+        with st.spinner("Fetching and processing regional data..."):
+            all_geo_data = get_all_geo_data(keywords)
+        if all_geo_data is None or all_geo_data.empty:
+            st.warning("Could not retrieve regional data.")
+        else:
+            if map_type == "Dominant Sentiment (Single Brand)":
+                selected_keyword = st.selectbox("Select a brand:", options=keywords, key="dominant_select")
+                df_view = all_geo_data[all_geo_data['keyword'] == selected_keyword].copy()
+                if not df_view.empty:
+                    df_view['dominant_sentiment'] = df_view[['Positive', 'Negative', 'Neutral']].idxmax(axis=1)
+                    map_fig = px.choropleth(df_view, locations='iso_alpha', color='dominant_sentiment', hover_name='country', hover_data={'iso_alpha': False, 'Positive': ':.1f', 'Negative': ':.1f', 'Neutral': ':.1f'}, color_discrete_map={'Positive':'#3CFFD1', 'Negative':'#FF4B4B', 'Neutral':'#A0A0A0'}, title=f"Dominant News Sentiment for '{selected_keyword}'")
+                    map_fig.update_layout(geo=dict(bgcolor='rgba(0,0,0,0)', lakecolor='#4E5D79'), paper_bgcolor="rgba(0,0,0,0)")
+                    st.plotly_chart(map_fig, use_container_width=True)
+            elif map_type == "Sentiment Score (Single Brand)":
+                selected_keyword = st.selectbox("Select a brand:", options=keywords, key="score_select")
+                df_view = all_geo_data[all_geo_data['keyword'] == selected_keyword]
+                if not df_view.empty:
+                    map_fig = px.choropleth(df_view, locations='iso_alpha', color='avg_score', hover_name='country', color_continuous_scale=px.colors.diverging.RdYlGn, range_color=[-0.5, 0.5], title=f"Average Sentiment Score for '{selected_keyword}'")
+                    map_fig.update_layout(geo=dict(bgcolor='rgba(0,0,0,0)', lakecolor='#4E5D79'), paper_bgcolor="rgba(0,0,0,0)")
+                    st.plotly_chart(map_fig, use_container_width=True)
+            else: # Competitive Comparison
+                if len(keywords) < 2:
+                    st.warning("Please select at least two brands for comparison.")
+                else:
+                    pivot_df = all_geo_data.pivot(index='iso_alpha', columns='keyword', values='avg_score')
+                    pivot_df['winner'] = pivot_df.idxmax(axis=1)
+                    pivot_df = pivot_df.reset_index().merge(all_geo_data[['iso_alpha', 'country']].drop_duplicates(), on='iso_alpha')
+                    brand_colors = px.colors.qualitative.Plotly
+                    color_map = {keyword: brand_colors[i % len(brand_colors)] for i, keyword in enumerate(keywords)}
+                    st.info("Map shows which brand has the highest average sentiment score in each region.")
+                    map_fig = px.choropleth(pivot_df, locations='iso_alpha', color='winner', hover_name='country', color_discrete_map=color_map, title='Geographic Sentiment Leader')
+                    map_fig.update_layout(geo=dict(bgcolor='rgba(0,0,0,0)', lakecolor='#4E5D79'), paper_bgcolor="rgba(0,0,0,0)")
+                    st.plotly_chart(map_fig, use_container_width=True)
+
+    with tab3:
+        st.markdown('<h2 class="section-header">📰 Latest News Feed</h2>', unsafe_allow_html=True)
+        if keywords:
+            selected_keyword_news = st.selectbox("Select a brand to view recent articles:", options=keywords, key="news_select")
+            if selected_keyword_news in sentiment_data:
+                articles = sentiment_data[selected_keyword_news]['articles']
+                if articles:
+                    pos_col, neu_col, neg_col = st.columns(3)
+                    # --- FIX: Replaced the incorrect list comprehension with a standard for loop ---
+                    with pos_col:
+                        st.subheader("👍 Positive")
+                        for article in [a for a in articles if a['sentiment_category'] == 'Positive'][:5]:
+                            st.markdown(f"**[{article['title']}]({article['link']})**")
+                            st.caption(f"Source: {article['source']}")
+                            st.markdown("---")
+                    with neu_col:
+                        st.subheader("😐 Neutral")
+                        for article in [a for a in articles if a['sentiment_category'] == 'Neutral'][:5]:
+                            st.markdown(f"**[{article['title']}]({article['link']})**")
+                            st.caption(f"Source: {article['source']}")
+                            st.markdown("---")
+                    with neg_col:
+                        st.subheader("👎 Negative")
+                        for article in [a for a in articles if a['sentiment_category'] == 'Negative'][:5]:
+                            st.markdown(f"**[{article['title']}]({article['link']})**")
+                            st.caption(f"Source: {article['source']}")
+                            st.markdown("---")
+                else:
+                    st.warning(f"No news articles found for '{selected_keyword_news}'.")
+    
+    with tab4:
+        st.markdown('<h2 class="section-header">📄 Generate & Download Report</h2>', unsafe_allow_html=True)
+        st.info("Click below to generate a PDF summary of the current analysis.")
+        trends_fig_for_pdf = px.line(trends_data) if trends_data is not None and not trends_data.empty else None
         
-        with main_col2:
-            st.markdown('<h2 class="section-header">📰 News Sentiment Summary</h2>', unsafe_allow_html=True)
-            if news_items:
-                summary = sentiment_summary(news_items)
-                
-                # Custom colors for metric values
-                st.markdown(f"""
-                <style>
-                [data-testid="stMetricValue"] {{ color: #FFFFFF; }}
-                #metric-Positive [data-testid="stMetricValue"] {{ color: #3CFFD1; }}
-                #metric-Negative [data-testid="stMetricValue"] {{ color: #FF4B4B; }}
-                </style>
-                """, unsafe_allow_html=True)
-                
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.markdown('<div id="metric-Positive">', unsafe_allow_html=True)
-                    st.metric("👍 Positive", f"{summary['Positive']}%")
-                    st.markdown('</div>', unsafe_allow_html=True)
-                with col2:
-                    st.metric("😐 Neutral", f"{summary['Neutral']}%")
-                with col3:
-                    st.markdown('<div id="metric-Negative">', unsafe_allow_html=True)
-                    st.metric("👎 Negative", f"{summary['Negative']}%")
-                    st.markdown('</div>', unsafe_allow_html=True)
+        stock_fig_for_pdf = None
+        if stock_data is not None and not stock_data.empty:
+            if isinstance(stock_data.columns, pd.MultiIndex):
+                close_prices_pdf = stock_data.xs('Close', level=1, axis=1)
             else:
-                st.warning("No recent news articles found to analyze sentiment.")
+                close_prices_pdf = stock_data[['Close']]
+            stock_fig_for_pdf = px.line(close_prices_pdf)
 
-        # Display News Articles below the main dashboard
-        if news_items:
-            st.markdown('<h2 class="section-header">📝 Latest News Breakdown</h2>', unsafe_allow_html=True)
-
-            sentiment_map = {
-                "Positive": "👍 Positive",
-                "Neutral": "😐 Neutral",
-                "Negative": "👎 Negative",
-            }
-            
-            # Use columns for better layout
-            news_cols = st.columns(3)
-            col_idx = 0
-
-            for sentiment_category, display_name in sentiment_map.items():
-                filtered_news = [n for n in news_items if n['sentiment'] == sentiment_category]
-                if filtered_news:
-                    with news_cols[col_idx % 3]:
-                        st.markdown(f"### {display_name}")
-                        for news in filtered_news[:3]: # Show top 3 for each category
-                            with st.container(border=True):
-                                st.markdown(f"<p class='news-title'><a href='{news['link']}' target='_blank'>{news['title']}</a></p>", unsafe_allow_html=True)
-                                st.caption(news['description'])
-                    col_idx += 1
-
-
-# --- Footer ---
-st.markdown("---")
-st.markdown("<p class='footer'>Developed with ❤️ using Streamlit & Python</p>", unsafe_allow_html=True)
+        pdf_bytes = create_pdf_report(keywords, trends_fig_for_pdf, sentiment_data, wordcloud_figs, stock_fig_for_pdf)
+        st.download_button(label="📥 Download PDF Report", data=pdf_bytes, file_name=f"brand_report_{'_'.join(keywords)}.pdf", mime="application/pdf")

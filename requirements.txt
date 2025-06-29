@@ -1,6 +1,13 @@
 streamlit
+pytrends
+vadersentiment
+pandas
 requests
 beautifulsoup4
-pytrends
-vaderSentiment
-pandas
+plotly
+yfinance
+wordcloud
+matplotlib
+spacy
+fpdf2
+kaleido
