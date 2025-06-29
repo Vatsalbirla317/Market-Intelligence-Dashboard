@@ -46,6 +46,37 @@ def load_css():
     """, unsafe_allow_html=True)
 
 # ----------------- Backend Data Fetching Functions (Cached) -----------------
+# *** FIX: Re-adding the missing discovery functions ***
+@st.cache_data(ttl=3600)
+def fetch_trending_searches(country_code='US'):
+    pytrends = TrendReq(hl='en-US', tz=330)
+    try:
+        df = pytrends.trending_searches(pn=country_code.lower())
+        return df[0].tolist()
+    except Exception:
+        return []
+
+@st.cache_data(ttl=1800)
+def fetch_top_headlines(country_code='US'):
+    try:
+        url = f"https://news.google.com/rss?hl=en-{country_code}&gl={country_code}&ceid={country_code}:en"
+        res = requests.get(url)
+        res.raise_for_status()
+        soup = BeautifulSoup(res.content, features="xml")
+        return [item.title.text for item in soup.find_all('item')]
+    except Exception:
+        return []
+
+@st.cache_data(ttl=3600)
+def get_google_suggestions(term):
+    if not term:
+        return []
+    pytrends = TrendReq(hl='en-US', tz=330)
+    try:
+        return pytrends.suggestions(keyword=term)
+    except Exception:
+        return []
+
 @st.cache_data(ttl=600)
 def fetch_google_trends(keywords, timeframe='today 1-m', geo=''):
     if not keywords:
@@ -138,18 +169,14 @@ def get_all_geo_data(keywords):
         return None
     return pd.concat(all_data_list, ignore_index=True)
 
-# *** THIS IS THE FINAL, ROBUST VERSION OF THE PDF FUNCTION ***
 def create_pdf_report(keywords, trends_fig, sentiment_data, wordclouds, stock_fig):
     def sanitize_text(text):
         return text.encode('latin-1', 'replace').decode('latin-1')
-
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", 'B', 16)
     pdf.cell(0, 10, sanitize_text(f"Brand Reputation Report for: {', '.join(keywords)}"), 0, 1, 'C')
     pdf.ln(10)
-
-    # --- Resilient Image Generation for Trends ---
     try:
         if trends_fig:
             pdf.set_font("Arial", 'B', 12)
@@ -160,19 +187,17 @@ def create_pdf_report(keywords, trends_fig, sentiment_data, wordclouds, stock_fi
             pdf.ln(5)
     except Exception as e:
         pdf.set_font("Arial", 'I', 10)
-        pdf.set_text_color(255, 75, 75) # Red text for error
-        pdf.cell(0, 10, sanitize_text("(Chart generation failed. Kaleido engine unavailable on server.)"), 0, 1, 'C')
+        pdf.set_text_color(255, 75, 75)
+        pdf.cell(0, 10, sanitize_text("(Chart generation failed. Kaleido engine may be unavailable on server.)"), 0, 1, 'C')
         pdf.set_text_color(0, 0, 0)
         print(f"PDF Error (Trends): {e}")
 
-    # --- Resilient Image Generation for Word Clouds and Stock ---
     for keyword, data in sentiment_data.items():
         pdf.add_page()
         pdf.set_font("Arial", 'B', 12)
         pdf.cell(0, 10, sanitize_text(f"Sentiment for '{keyword}'"), 0, 1)
         pdf.set_font("Arial", '', 10)
         pdf.cell(0, 8, f"  - Positive: {data['summary']['Positive']}% | Neutral: {data['summary']['Neutral']}% | Negative: {data['summary']['Negative']}%", 0, 1)
-        
         try:
             has_pos_wc = 'positive' in wordclouds[keyword] and wordclouds[keyword]['positive'] is not None
             if has_pos_wc:
@@ -181,7 +206,6 @@ def create_pdf_report(keywords, trends_fig, sentiment_data, wordclouds, stock_fi
                 pdf.image(wc_pos_img, x=10, w=90)
         except Exception as e:
             print(f"PDF Error (Positive WC): {e}")
-
         try:
             has_neg_wc = 'negative' in wordclouds[keyword] and wordclouds[keyword]['negative'] is not None
             if has_neg_wc:
@@ -190,9 +214,8 @@ def create_pdf_report(keywords, trends_fig, sentiment_data, wordclouds, stock_fi
                 pdf.image(wc_neg_img, x=110, w=90)
         except Exception as e:
             print(f"PDF Error (Negative WC): {e}")
-        
-        pdf.ln(60)
-
+        if 'positive' in wordclouds[keyword] or 'negative' in wordclouds[keyword]:
+            pdf.ln(60)
     try:
         if stock_fig:
             pdf.add_page()
@@ -204,7 +227,7 @@ def create_pdf_report(keywords, trends_fig, sentiment_data, wordclouds, stock_fi
     except Exception as e:
         pdf.set_font("Arial", 'I', 10)
         pdf.set_text_color(255, 75, 75)
-        pdf.cell(0, 10, sanitize_text(f"(Chart generation failed. Kaleido engine unavailable on server.)"), 0, 1, 'C')
+        pdf.cell(0, 10, sanitize_text("(Chart generation failed. Kaleido engine may be unavailable on server.)"), 0, 1, 'C')
         pdf.set_text_color(0, 0, 0)
         print(f"PDF Error (Stock): {e}")
 
@@ -240,6 +263,7 @@ with st.sidebar:
             st.session_state.keywords.append(title)
         st.session_state.suggestions = []
         st.session_state.new_topic_input = ""
+
     def search_for_suggestions():
         if st.session_state.new_topic_input:
             st.session_state.suggestions = get_google_suggestions(st.session_state.new_topic_input)
@@ -273,6 +297,15 @@ with st.sidebar:
                     st.rerun()
         else:
             st.write("Could not fetch trends.")
+    
+    # *** FIX: Re-adding the Top Headlines expander ***
+    with st.expander("Today's Top News Headlines"):
+        headlines = fetch_top_headlines(geo if geo else 'US')
+        if headlines:
+            for headline in headlines[:5]:
+                st.write(f"▪️ {headline}")
+        else:
+            st.write("Could not fetch headlines.")
 
 keywords = st.session_state.keywords
 if not keywords:
