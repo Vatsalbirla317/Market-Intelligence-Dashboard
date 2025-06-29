@@ -46,25 +46,6 @@ def load_css():
     """, unsafe_allow_html=True)
 
 # ----------------- Backend Data Fetching Functions (Cached) -----------------
-@st.cache_data(ttl=3600)
-def fetch_trending_searches(country_code='US'):
-    pytrends = TrendReq(hl='en-US', tz=330)
-    try:
-        df = pytrends.trending_searches(pn=country_code.lower())
-        return df[0].tolist()
-    except Exception:
-        return []
-
-@st.cache_data(ttl=3600)
-def get_google_suggestions(term):
-    if not term:
-        return []
-    pytrends = TrendReq(hl='en-US', tz=330)
-    try:
-        return pytrends.suggestions(keyword=term)
-    except Exception:
-        return []
-
 @st.cache_data(ttl=600)
 def fetch_google_trends(keywords, timeframe='today 1-m', geo=''):
     if not keywords:
@@ -157,46 +138,76 @@ def get_all_geo_data(keywords):
         return None
     return pd.concat(all_data_list, ignore_index=True)
 
+# *** THIS IS THE FINAL, ROBUST VERSION OF THE PDF FUNCTION ***
 def create_pdf_report(keywords, trends_fig, sentiment_data, wordclouds, stock_fig):
     def sanitize_text(text):
         return text.encode('latin-1', 'replace').decode('latin-1')
+
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", 'B', 16)
     pdf.cell(0, 10, sanitize_text(f"Brand Reputation Report for: {', '.join(keywords)}"), 0, 1, 'C')
     pdf.ln(10)
-    if trends_fig:
-        pdf.set_font("Arial", 'B', 12)
-        pdf.cell(0, 10, "Google Trends Analysis", 0, 1)
-        trends_img = BytesIO()
-        trends_fig.write_image(trends_img, format='png', scale=2)
-        pdf.image(trends_img, x=10, w=190)
-        pdf.ln(5)
+
+    # --- Resilient Image Generation for Trends ---
+    try:
+        if trends_fig:
+            pdf.set_font("Arial", 'B', 12)
+            pdf.cell(0, 10, "Google Trends Analysis", 0, 1)
+            trends_img = BytesIO()
+            trends_fig.write_image(trends_img, format='png', scale=2)
+            pdf.image(trends_img, x=10, w=190)
+            pdf.ln(5)
+    except Exception as e:
+        pdf.set_font("Arial", 'I', 10)
+        pdf.set_text_color(255, 75, 75) # Red text for error
+        pdf.cell(0, 10, sanitize_text("(Chart generation failed. Kaleido engine unavailable on server.)"), 0, 1, 'C')
+        pdf.set_text_color(0, 0, 0)
+        print(f"PDF Error (Trends): {e}")
+
+    # --- Resilient Image Generation for Word Clouds and Stock ---
     for keyword, data in sentiment_data.items():
         pdf.add_page()
         pdf.set_font("Arial", 'B', 12)
         pdf.cell(0, 10, sanitize_text(f"Sentiment for '{keyword}'"), 0, 1)
         pdf.set_font("Arial", '', 10)
         pdf.cell(0, 8, f"  - Positive: {data['summary']['Positive']}% | Neutral: {data['summary']['Neutral']}% | Negative: {data['summary']['Negative']}%", 0, 1)
-        has_pos_wc = 'positive' in wordclouds[keyword] and wordclouds[keyword]['positive'] is not None
-        has_neg_wc = 'negative' in wordclouds[keyword] and wordclouds[keyword]['negative'] is not None
-        if has_pos_wc:
-            wc_pos_img = BytesIO()
-            wordclouds[keyword]['positive'].savefig(wc_pos_img, format='png', dpi=150)
-            pdf.image(wc_pos_img, x=10 if has_neg_wc else pdf.w / 2 - 45, w=90)
-        if has_neg_wc:
-            wc_neg_img = BytesIO()
-            wordclouds[keyword]['negative'].savefig(wc_neg_img, format='png', dpi=150)
-            pdf.image(wc_neg_img, x=110, w=90)
-        if has_pos_wc or has_neg_wc:
-            pdf.ln(60)
-    if stock_fig:
-        pdf.add_page()
-        pdf.set_font("Arial", 'B', 12)
-        pdf.cell(0, 10, "Stock Market Performance", 0, 1)
-        stock_img = BytesIO()
-        stock_fig.write_image(stock_img, format='png', scale=2)
-        pdf.image(stock_img, x=10, w=190)
+        
+        try:
+            has_pos_wc = 'positive' in wordclouds[keyword] and wordclouds[keyword]['positive'] is not None
+            if has_pos_wc:
+                wc_pos_img = BytesIO()
+                wordclouds[keyword]['positive'].savefig(wc_pos_img, format='png', dpi=150)
+                pdf.image(wc_pos_img, x=10, w=90)
+        except Exception as e:
+            print(f"PDF Error (Positive WC): {e}")
+
+        try:
+            has_neg_wc = 'negative' in wordclouds[keyword] and wordclouds[keyword]['negative'] is not None
+            if has_neg_wc:
+                wc_neg_img = BytesIO()
+                wordclouds[keyword]['negative'].savefig(wc_neg_img, format='png', dpi=150)
+                pdf.image(wc_neg_img, x=110, w=90)
+        except Exception as e:
+            print(f"PDF Error (Negative WC): {e}")
+        
+        pdf.ln(60)
+
+    try:
+        if stock_fig:
+            pdf.add_page()
+            pdf.set_font("Arial", 'B', 12)
+            pdf.cell(0, 10, "Stock Market Performance", 0, 1)
+            stock_img = BytesIO()
+            stock_fig.write_image(stock_img, format='png', scale=2)
+            pdf.image(stock_img, x=10, w=190)
+    except Exception as e:
+        pdf.set_font("Arial", 'I', 10)
+        pdf.set_text_color(255, 75, 75)
+        pdf.cell(0, 10, sanitize_text(f"(Chart generation failed. Kaleido engine unavailable on server.)"), 0, 1, 'C')
+        pdf.set_text_color(0, 0, 0)
+        print(f"PDF Error (Stock): {e}")
+
     raw_output = pdf.output()
     if isinstance(raw_output, str):
         return raw_output.encode('latin-1')
@@ -206,7 +217,6 @@ def create_pdf_report(keywords, trends_fig, sentiment_data, wordclouds, stock_fi
 load_css()
 st.markdown('<h1 class="title-text">🧠 Market Intelligence Dashboard</h1>', unsafe_allow_html=True)
 
-# --- Initialize Session State ---
 if 'keywords' not in st.session_state:
     st.session_state.keywords = ["Tesla", "NVIDIA"]
 if 'tickers' not in st.session_state:
@@ -216,15 +226,13 @@ if 'suggestions' not in st.session_state:
 if 'new_topic_input' not in st.session_state:
     st.session_state.new_topic_input = ""
 
-# --- Sidebar ---
 with st.sidebar:
     st.header("⚙️ Configuration")
-
     st.write("#### Currently Analyzing Topics")
     st.session_state.keywords = st.multiselect("Topics", list(set(st.session_state.keywords)), st.session_state.keywords, label_visibility="collapsed")
     
     st.write("#### Stock Tickers to Track")
-    ticker_input_str = st.text_input("Tickers", ", ".join(st.session_state.tickers), help="Comma-separated list of stock tickers (e.g., TSLA, PUM.DE, AAPL)", label_visibility="collapsed")
+    ticker_input_str = st.text_input("Tickers", ", ".join(st.session_state.tickers), help="Comma-separated list (e.g., TSLA, PUM.DE, AAPL)", label_visibility="collapsed")
     st.session_state.tickers = [t.strip().upper() for t in ticker_input_str.split(',') if t.strip()]
 
     def add_suggestion_to_keywords(title):
@@ -232,7 +240,6 @@ with st.sidebar:
             st.session_state.keywords.append(title)
         st.session_state.suggestions = []
         st.session_state.new_topic_input = ""
-
     def search_for_suggestions():
         if st.session_state.new_topic_input:
             st.session_state.suggestions = get_google_suggestions(st.session_state.new_topic_input)
@@ -283,8 +290,8 @@ else:
         news = fetch_news_data(keyword)
         sentiment_data[keyword] = {'summary': get_sentiment_summary(news), 'articles': news}
         wordcloud_figs[keyword] = {
-            'positive': generate_wordcloud(" ".join(n['description'] for n in news if n['sentiment_category'] == 'Positive'), "Positive Buzzwords"),
-            'negative': generate_wordcloud(" ".join(n['description'] for n in news if n['sentiment_category'] == 'Negative'), "Negative Buzzwords")
+            'positive': generate_wordcloud(" ".join(n['description'] for n in news if n['sentiment_category'] == 'Positive'), "Positive"),
+            'negative': generate_wordcloud(" ".join(n['description'] for n in news if n['sentiment_category'] == 'Negative'), "Negative")
         }
     
     with tab1:
@@ -329,29 +336,29 @@ else:
 
     with tab2:
         st.markdown('<h2 class="section-header">🌍 Global Sentiment Comparison</h2>', unsafe_allow_html=True)
-        map_type = st.radio("Select Map Type:", ("Dominant Sentiment (Single Brand)", "Sentiment Score (Single Brand)", "Competitive Comparison (Who Wins Where?)"), horizontal=True)
+        map_type = st.radio("Select Map Type:", ("Dominant Sentiment", "Sentiment Score", "Competitive Leader"), horizontal=True)
         st.markdown("---")
         with st.spinner("Fetching and processing regional data..."):
             all_geo_data = get_all_geo_data(keywords)
         if all_geo_data is None or all_geo_data.empty:
             st.warning("Could not retrieve regional data.")
         else:
-            if map_type == "Dominant Sentiment (Single Brand)":
+            if map_type == "Dominant Sentiment":
                 selected_keyword = st.selectbox("Select a brand:", options=keywords, key="dominant_select")
                 df_view = all_geo_data[all_geo_data['keyword'] == selected_keyword].copy()
                 if not df_view.empty:
                     df_view['dominant_sentiment'] = df_view[['Positive', 'Negative', 'Neutral']].idxmax(axis=1)
                     map_fig = px.choropleth(df_view, locations='iso_alpha', color='dominant_sentiment', hover_name='country', hover_data={'iso_alpha': False, 'Positive': ':.1f', 'Negative': ':.1f', 'Neutral': ':.1f'}, color_discrete_map={'Positive':'#3CFFD1', 'Negative':'#FF4B4B', 'Neutral':'#A0A0A0'}, title=f"Dominant News Sentiment for '{selected_keyword}'")
-                    map_fig.update_layout(geo=dict(bgcolor='rgba(0,0,0,0)', lakecolor='#4E5D79'), paper_bgcolor="rgba(0,0,0,0)")
+                    map_fig.update_layout(geo=dict(bgcolor='rgba(0,0,0,0)'), paper_bgcolor="rgba(0,0,0,0)")
                     st.plotly_chart(map_fig, use_container_width=True)
-            elif map_type == "Sentiment Score (Single Brand)":
+            elif map_type == "Sentiment Score":
                 selected_keyword = st.selectbox("Select a brand:", options=keywords, key="score_select")
                 df_view = all_geo_data[all_geo_data['keyword'] == selected_keyword]
                 if not df_view.empty:
                     map_fig = px.choropleth(df_view, locations='iso_alpha', color='avg_score', hover_name='country', color_continuous_scale=px.colors.diverging.RdYlGn, range_color=[-0.5, 0.5], title=f"Average Sentiment Score for '{selected_keyword}'")
-                    map_fig.update_layout(geo=dict(bgcolor='rgba(0,0,0,0)', lakecolor='#4E5D79'), paper_bgcolor="rgba(0,0,0,0)")
+                    map_fig.update_layout(geo=dict(bgcolor='rgba(0,0,0,0)'), paper_bgcolor="rgba(0,0,0,0)")
                     st.plotly_chart(map_fig, use_container_width=True)
-            else: # Competitive Comparison
+            else: # Competitive Leader
                 if len(keywords) < 2:
                     st.warning("Please select at least two brands for comparison.")
                 else:
@@ -362,7 +369,7 @@ else:
                     color_map = {keyword: brand_colors[i % len(brand_colors)] for i, keyword in enumerate(keywords)}
                     st.info("Map shows which brand has the highest average sentiment score in each region.")
                     map_fig = px.choropleth(pivot_df, locations='iso_alpha', color='winner', hover_name='country', color_discrete_map=color_map, title='Geographic Sentiment Leader')
-                    map_fig.update_layout(geo=dict(bgcolor='rgba(0,0,0,0)', lakecolor='#4E5D79'), paper_bgcolor="rgba(0,0,0,0)")
+                    map_fig.update_layout(geo=dict(bgcolor='rgba(0,0,0,0)'), paper_bgcolor="rgba(0,0,0,0)")
                     st.plotly_chart(map_fig, use_container_width=True)
 
     with tab3:
@@ -373,24 +380,20 @@ else:
                 articles = sentiment_data[selected_keyword_news]['articles']
                 if articles:
                     pos_col, neu_col, neg_col = st.columns(3)
-                    # --- THE ONLY FIX IS IN THE THREE BLOCKS BELOW ---
                     with pos_col:
                         st.subheader("👍 Positive")
-                        # Use a standard, robust for-loop
                         for article in [a for a in articles if a['sentiment_category'] == 'Positive'][:5]:
                             st.markdown(f"**[{article['title']}]({article['link']})**")
                             st.caption(f"Source: {article['source']}")
                             st.markdown("---")
                     with neu_col:
                         st.subheader("😐 Neutral")
-                        # Use a standard, robust for-loop
                         for article in [a for a in articles if a['sentiment_category'] == 'Neutral'][:5]:
                             st.markdown(f"**[{article['title']}]({article['link']})**")
                             st.caption(f"Source: {article['source']}")
                             st.markdown("---")
                     with neg_col:
                         st.subheader("👎 Negative")
-                        # Use a standard, robust for-loop
                         for article in [a for a in articles if a['sentiment_category'] == 'Negative'][:5]:
                             st.markdown(f"**[{article['title']}]({article['link']})**")
                             st.caption(f"Source: {article['source']}")
