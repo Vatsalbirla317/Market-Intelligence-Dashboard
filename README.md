@@ -26,9 +26,8 @@ Market Intelligence Dashboard is a powerful Python-based Streamlit tool that ana
 git clone https://github.com/yourusername/market-intelligence-dashboard.git
 cd market-intelligence-dashboard
 pip install -r requirements.txt
+
 ⚡ Usage
-
-
 streamlit run app.py
 Then open the URL provided in your terminal (usually http://localhost:8501) to interact with the dashboard.
 
