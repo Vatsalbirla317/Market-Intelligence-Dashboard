@@ -1,4 +1,4 @@
-📊 Market Intelligence Dashboard
+📊 
 Market Intelligence Dashboard is a powerful Python-based Streamlit tool that analyzes brand reputation using Google Trends, news sentiment, and stock data. It helps users monitor public perception of brands, products, or individuals in real time.
 
 🔗 Live App: Try it here 🚀
